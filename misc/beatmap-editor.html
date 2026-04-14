@@ -211,7 +211,7 @@
       <div class="field-row">
         <label>Offset</label>
         <input type="number" id="audio-offset" value="0" step="10" title="Audio start offset in ms">
-        <span style="color:var(--text3);font-size:11px;">ms</span>
+        <span style="color:var(--text2);font-size:12px;min-width:20px;flex-shrink:0;">ms</span>
       </div>
     </div>
 
@@ -250,7 +250,12 @@
       <div class="field-row">
         <label>Hit line</label>
         <input type="number" id="hitline-pct" min="10" max="90" value="85" style="width:48px;">
-        <span style="color:var(--text3);font-size:11px;">%</span>
+        <span style="color:var(--text2);font-size:12px;min-width:14px;flex-shrink:0;">%</span>
+      </div>
+      <div class="field-row">
+        <label>Bar every</label>
+        <input type="number" id="bar-beats" min="1" max="32" value="4" style="width:48px;">
+        <span style="color:var(--text2);font-size:12px;min-width:32px;flex-shrink:0;">beats</span>
       </div>
     </div>
 
@@ -284,7 +289,7 @@
       <div class="panel-title">Keyboard</div>
       <div style="color:var(--text3);font-size:11px;line-height:1.8;">
         Space — Play/Pause<br>
-        Esc — Stop<br>
+        Esc — Stop &amp; rewind<br>
         S — Select tool<br>
         T — Tap tool<br>
         H — Hold tool<br>
@@ -294,7 +299,8 @@
         Ctrl+Y — Redo<br>
         Scroll — Scroll time<br>
         Ctrl+Scroll — Zoom<br>
-        Click+Drag — Pan
+        Mid-drag — Pan<br>
+        Ctrl+RClick — Set POS
       </div>
     </div>
   </div>
@@ -340,21 +346,25 @@ const state = {
   nextId: 1,
   tool: 'select',
   snap: 8,         // 1/snap beat
-  zoom: 1,         // px per 1/64 beat
-  scrollBeat: 0,   // top of viewport in beats
+  zoom: 1,         // px per beat
+  scrollBeat: 0,   // beat at hit line
   hitLinePct: 0.85,
+  barBeats: 4,     // draw a thick bar line every N beats
+  maxTrackWidth: 120, // px cap per track lane
   audioBuffer: null,
   audioCtx: null,
   audioSource: null,
-  audioStartTime: 0,  // audioCtx time when playback started
-  audioStartBeat: 0,  // beat at which playback started
+  audioStartTime: 0,
+  audioStartBeat: 0,
   playing: false,
   playheadBeat: 0,
   selectedNotes: new Set(),
   undoStack: [],
   redoStack: [],
-  holdDragStart: null, // {track, beat} for hold drag
-  dragPan: null,       // {startY, startScrollBeat}
+  holdDragStart: null,
+  holdDragCurrent: null,
+  dragPan: null,
+  mousePos: null,   // {x, y} for cursor preview
   canvasW: 0,
   canvasH: 0,
 };
@@ -394,36 +404,42 @@ function resize() {
 window.addEventListener('resize', resize);
 
 // ─── Layout helpers ───────────────────────────────────────────────────────────
-function trackX(track) {
-  const pad = 40; // left ruler width
-  const w = (state.canvasW - pad) / state.trackCount;
-  return pad + track * w;
-}
+const RULER_W = 40; // left ruler width
+
 function trackW() {
-  const pad = 40;
-  return (state.canvasW - pad) / state.trackCount;
+  const avail = state.canvasW - RULER_W;
+  const natural = avail / state.trackCount;
+  return Math.min(natural, state.maxTrackWidth);
+}
+function tracksZoneW() {
+  return trackW() * state.trackCount;
+}
+function tracksOffsetX() {
+  // Center the track bed if narrower than available space
+  const avail = state.canvasW - RULER_W;
+  return RULER_W + Math.max(0, (avail - tracksZoneW()) / 2);
+}
+function trackX(track) {
+  return tracksOffsetX() + track * trackW();
 }
 function hitLineY() {
   return state.canvasH * state.hitLinePct;
 }
-// beat -> Y  (larger beat = higher on screen, i.e. future notes come from top)
-// at scrollBeat, hitline Y is shown
+// beat -> Y: hit line shows scrollBeat; higher beat = higher on screen (future notes fall from top)
 function beatToY(beat) {
-  const pxPerBeat = beatsPerPx(); // px per beat at current zoom
-  return hitLineY() - (beat - state.scrollBeat) * pxPerBeat;
+  return hitLineY() - (beat - state.scrollBeat) * beatsPerPx();
 }
 function yToBeat(y) {
-  const pxPerBeat = beatsPerPx();
-  return state.scrollBeat + (hitLineY() - y) / pxPerBeat;
+  return state.scrollBeat + (hitLineY() - y) / beatsPerPx();
 }
 function beatsPerPx() {
-  // base: zoom=1 => 80px per beat
   return 80 * state.zoom;
 }
 function xToTrack(x) {
-  const pad = 40;
-  const w = (state.canvasW - pad) / state.trackCount;
-  return Math.floor((x - pad) / w);
+  const ox = tracksOffsetX();
+  const tw = trackW();
+  const idx = Math.floor((x - ox) / tw);
+  return idx;
 }
 function snapBeat(beat) {
   const div = 1 / state.snap;
@@ -435,73 +451,81 @@ function render() {
   const W = state.canvasW, H = state.canvasH;
   ctx.clearRect(0, 0, W, H);
 
-  // Background
   ctx.fillStyle = '#0d0d0f';
   ctx.fillRect(0, 0, W, H);
 
-  const pad = 40;
   const tw = trackW();
+  const ox = tracksOffsetX();
+  const tzW = tracksZoneW();
   const hlY = hitLineY();
-
-  // Draw beat grid
   const pxPerBeat = beatsPerPx();
+
+  // Visible beat range
   const topBeat = yToBeat(0);
   const botBeat = yToBeat(H);
-  const startBeat = Math.floor(botBeat);
-  const endBeat = Math.ceil(topBeat) + 1;
 
-  // Sub-beat lines (snap grid)
-  ctx.lineWidth = 0.5;
-  const snapDiv = 1 / state.snap;
-  for (let b = Math.floor(botBeat / snapDiv) * snapDiv; b <= endBeat; b += snapDiv) {
-    const y = Math.round(beatToY(b));
-    if (y < 0 || y > H) continue;
-    const isBeat = Math.abs(b - Math.round(b)) < 1e-9;
-    const isHalf = !isBeat && Math.abs((b * 2) - Math.round(b * 2)) < 1e-9;
-    ctx.strokeStyle = isBeat ? '#2e2e40' : (isHalf ? '#1e1e28' : '#181820');
-    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-
-  // Beat numbers + measure lines
-  for (let b = startBeat; b <= endBeat; b++) {
-    const y = beatToY(b);
-    if (y < -10 || y > H + 10) continue;
-    const isMeasure = b % 4 === 0;
-    ctx.strokeStyle = isMeasure ? '#3a3a50' : '#222230';
-    ctx.lineWidth = isMeasure ? 1 : 0.5;
-    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W, y); ctx.stroke();
-
-    // Beat label
-    ctx.fillStyle = isMeasure ? '#5a5a7a' : '#363648';
-    ctx.font = isMeasure ? '10px monospace' : '9px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(b, pad - 4, y + 3);
-  }
-
-  // Track lanes
+  // ── Track lanes background ──
   for (let t = 0; t < state.trackCount; t++) {
     const x = trackX(t);
-    // Lane background (alternating)
-    ctx.fillStyle = t % 2 === 0 ? '#0f0f12' : '#0d0d10';
+    ctx.fillStyle = t % 2 === 0 ? '#0f0f13' : '#0d0d10';
     ctx.fillRect(x, 0, tw, H);
-    // Lane border
-    ctx.strokeStyle = '#1e1e28';
+  }
+
+  // ── Sub-beat snap grid lines (only inside track zone) ──
+  ctx.lineWidth = 0.5;
+  const snapDiv = 1 / state.snap;
+  for (let b = Math.floor(botBeat / snapDiv) * snapDiv; b <= topBeat + snapDiv; b += snapDiv) {
+    const frac = ((b % 1) + 1) % 1;
+    const isBeat = frac < 1e-9 || frac > 1 - 1e-9;
+    if (isBeat) continue; // drawn separately below
+    const y = Math.round(beatToY(b));
+    if (y < 0 || y > H) continue;
+    ctx.strokeStyle = '#181820';
+    ctx.beginPath(); ctx.moveTo(ox, y); ctx.lineTo(ox + tzW, y); ctx.stroke();
+  }
+
+  // ── Beat lines & bar-group lines ──
+  const barBeats = state.barBeats || 4;
+  for (let b = Math.floor(botBeat) - 1; b <= Math.ceil(topBeat) + 1; b++) {
+    const y = beatToY(b);
+    if (y < -2 || y > H + 2) continue;
+    const isBar = b % barBeats === 0;
+    if (isBar) {
+      ctx.strokeStyle = '#3e3e58';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(RULER_W, y); ctx.lineTo(ox + tzW, y); ctx.stroke();
+    } else {
+      ctx.strokeStyle = '#1e1e2c';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(ox, y); ctx.lineTo(ox + tzW, y); ctx.stroke();
+    }
+
+    // Ruler label
+    ctx.fillStyle = isBar ? '#6868a0' : '#383848';
+    ctx.font = isBar ? '10px monospace' : '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(b, RULER_W - 4, y + 3);
+  }
+
+  // ── Track lane borders ──
+  for (let t = 0; t <= state.trackCount; t++) {
+    const x = trackX(t);
+    ctx.strokeStyle = (t === 0 || t === state.trackCount) ? '#303044' : '#1e1e2a';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    // Track header
-    ctx.fillStyle = '#1a1a24';
-    ctx.fillRect(x, 0, tw, 20);
-    ctx.fillStyle = '#6060a0';
+  }
+  // Track header labels
+  for (let t = 0; t < state.trackCount; t++) {
+    const x = trackX(t);
+    ctx.fillStyle = '#181824';
+    ctx.fillRect(x + 1, 0, tw - 1, 20);
+    ctx.fillStyle = '#5858a0';
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     ctx.fillText('T' + (t + 1), x + tw / 2, 14);
   }
-  // Right border of last track
-  ctx.strokeStyle = '#1e1e28';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(trackX(state.trackCount), 0); ctx.lineTo(trackX(state.trackCount), H); ctx.stroke();
 
-  // Draw hold bars (first pass — bar bodies)
+  // ── Hold bar bodies ──
   const holdPairs = getHoldPairs();
   for (const [ns, ne] of holdPairs) {
     const x = trackX(ns.track) + tw * 0.15;
@@ -509,7 +533,6 @@ function render() {
     const y1 = beatToY(ns.beat);
     const y2 = beatToY(ne.beat);
     const sel = state.selectedNotes.has(ns.id) || state.selectedNotes.has(ne.id);
-    // Bar body
     ctx.fillStyle = sel ? '#7a5010' : '#3a2a08';
     ctx.strokeStyle = sel ? '#ffb850' : '#c07020';
     ctx.lineWidth = sel ? 2 : 1;
@@ -520,7 +543,7 @@ function render() {
     ctx.fill(); ctx.stroke();
   }
 
-  // Draw notes
+  // ── Notes ──
   for (const note of state.notes) {
     const y = beatToY(note.beat);
     if (y < -30 || y > H + 30) continue;
@@ -529,7 +552,7 @@ function render() {
     drawNote(note, x, y, tw, sel);
   }
 
-  // Hold drag preview
+  // ── Hold drag preview ──
   if (state.holdDragStart && state.holdDragCurrent) {
     const x = trackX(state.holdDragStart.track) + tw * 0.15;
     const bw = tw * 0.7;
@@ -547,34 +570,85 @@ function render() {
     ctx.setLineDash([]);
   }
 
-  // Hit line
-  ctx.strokeStyle = '#ffffff30';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(pad, hlY); ctx.lineTo(W, hlY); ctx.stroke();
-  // Hit line glow
-  ctx.strokeStyle = '#ffffff10';
-  ctx.lineWidth = 8;
-  ctx.beginPath(); ctx.moveTo(pad, hlY); ctx.lineTo(W, hlY); ctx.stroke();
-  ctx.lineWidth = 1;
-
-  // Playhead line
-  const phY = beatToY(state.playheadBeat);
-  if (phY >= 0 && phY <= H) {
-    ctx.strokeStyle = '#5b8fffaa';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.moveTo(pad, phY); ctx.lineTo(W, phY); ctx.stroke();
-    ctx.setLineDash([]);
+  // ── Cursor preview (ghost note) ──
+  if (state.mousePos && !state.holdDragStart) {
+    const mp = state.mousePos;
+    const mTrack = xToTrack(mp.x);
+    if (mTrack >= 0 && mTrack < state.trackCount) {
+      const mBeat = snapBeat(yToBeat(mp.y));
+      const mY = beatToY(mBeat);
+      const mx = trackX(mTrack);
+      ctx.globalAlpha = 0.45;
+      if (state.tool === 'tap') {
+        drawNote({ type: 'tap', track: mTrack, beat: mBeat }, mx, mY, tw, false);
+      } else if (state.tool === 'hold') {
+        drawNote({ type: 'hold_start', track: mTrack, beat: mBeat }, mx, mY, tw, false);
+      } else if (state.tool === 'erase') {
+        ctx.strokeStyle = '#ff5f5f';
+        ctx.lineWidth = 1.5;
+        const ex = mx + tw * 0.08, ew = tw * 0.84;
+        ctx.beginPath();
+        ctx.roundRect(ex, mY - 5, ew, 10, 3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex + 3, mY - 4); ctx.lineTo(ex + ew - 3, mY + 4);
+        ctx.moveTo(ex + ew - 3, mY - 4); ctx.lineTo(ex + 3, mY + 4);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // Snap beat label beside cursor
+      ctx.fillStyle = '#8888cc';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      const labelX = Math.min(mx + tw + 2, W - 60);
+      ctx.fillText(mBeat.toFixed(3) + 'b', labelX, mY + 3);
+    }
   }
 
-  // Left ruler background
-  ctx.fillStyle = '#0d0d10';
-  ctx.fillRect(0, 0, pad, H);
-  ctx.strokeStyle = '#2e2e3a';
+  // ── Hit line ──
+  ctx.strokeStyle = '#ffffff30';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ox, hlY); ctx.lineTo(ox + tzW, hlY); ctx.stroke();
+  ctx.strokeStyle = '#ffffff0c';
+  ctx.lineWidth = 10;
+  ctx.beginPath(); ctx.moveTo(ox, hlY); ctx.lineTo(ox + tzW, hlY); ctx.stroke();
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(pad, 0); ctx.lineTo(pad, H); ctx.stroke();
 
-  // Update UI
+  // ── Playhead line ──
+  const phY = beatToY(state.playheadBeat);
+  if (phY >= 0 && phY <= H) {
+    ctx.strokeStyle = '#5b8fff99';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(RULER_W, phY); ctx.lineTo(ox + tzW, phY); ctx.stroke();
+    ctx.setLineDash([]);
+    // Playhead triangle on ruler
+    ctx.fillStyle = '#5b8fff';
+    ctx.beginPath();
+    ctx.moveTo(RULER_W, phY);
+    ctx.lineTo(RULER_W - 8, phY - 5);
+    ctx.lineTo(RULER_W - 8, phY + 5);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // ── Left ruler (drawn last so it covers any overflow) ──
+  ctx.fillStyle = '#0d0d11';
+  ctx.fillRect(0, 0, RULER_W, H);
+  ctx.strokeStyle = '#2e2e3e';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(RULER_W, 0); ctx.lineTo(RULER_W, H); ctx.stroke();
+
+  // Re-draw ruler beat labels on top
+  for (let b = Math.floor(botBeat) - 1; b <= Math.ceil(topBeat) + 1; b++) {
+    const y = beatToY(b);
+    if (y < -2 || y > H + 2) continue;
+    const isBar = b % barBeats === 0;
+    ctx.fillStyle = isBar ? '#6868a0' : '#383848';
+    ctx.font = isBar ? '10px monospace' : '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(b, RULER_W - 4, y + 3);
+  }
+
   updateStats();
   updateHUD();
 }
@@ -654,13 +728,29 @@ document.getElementById('file-audio').onchange = async (e) => {
 function playAudio() {
   if (!state.audioBuffer || !state.audioCtx) return;
   stopAudio();
-  const offsetSec = state.playheadBeat / (state.bpm / 60) + state.audioOffset / 1000;
-  if (offsetSec >= state.audioBuffer.duration) return;
+  // Time in seconds from playhead to beat 0
+  const beatOffsetSec = state.playheadBeat / (state.bpm / 60);
+  // Audio file position at beat 0 (accounting for user offset)
+  const audioAtBeat0 = state.audioOffset / 1000;
+  // Where we need to seek in the audio file
+  const audioSeekSec = audioAtBeat0 + beatOffsetSec;
+
   state.audioSource = state.audioCtx.createBufferSource();
   state.audioSource.buffer = state.audioBuffer;
   state.audioSource.connect(state.audioCtx.destination);
-  state.audioSource.start(0, Math.max(0, offsetSec));
-  state.audioStartTime = state.audioCtx.currentTime;
+
+  if (audioSeekSec >= state.audioBuffer.duration) return;
+
+  if (audioSeekSec >= 0) {
+    // Playhead is at or after audio start — start immediately at seek point
+    state.audioSource.start(0, audioSeekSec);
+    state.audioStartTime = state.audioCtx.currentTime;
+  } else {
+    // Playhead is before audio start — schedule audio to start later
+    const delayToAudio = -audioSeekSec;
+    state.audioSource.start(state.audioCtx.currentTime + delayToAudio, 0);
+    state.audioStartTime = state.audioCtx.currentTime;
+  }
   state.audioStartBeat = state.playheadBeat;
   state.playing = true;
   document.getElementById('btn-play').textContent = '⏸ Pause';
@@ -693,7 +783,8 @@ document.getElementById('btn-play').onclick = () => {
 document.getElementById('btn-stop').onclick = () => {
   stopAudio();
   state.playing = false;
-  state.playheadBeat = state.scrollBeat;
+  state.playheadBeat = 0;
+  state.scrollBeat = 0;
   document.getElementById('btn-play').textContent = '▶ Play';
   render();
 };
@@ -702,17 +793,17 @@ document.getElementById('btn-stop').onclick = () => {
 function playbackTick() {
   if (state.playing) {
     let elapsed;
-    if (state.audioCtx) {
+    if (state.audioCtx && state.audioBuffer) {
       elapsed = state.audioCtx.currentTime - state.audioStartTime;
     } else {
       elapsed = performance.now() / 1000 - state.audioStartTime;
     }
     state.playheadBeat = state.audioStartBeat + elapsed * (state.bpm / 60);
-    // auto scroll to follow playhead
-    const hlBeat = state.scrollBeat;
+    // Auto-scroll to keep playhead visible near hit line
     const visibleBeats = (state.canvasH * state.hitLinePct) / beatsPerPx();
-    if (state.playheadBeat > hlBeat + visibleBeats * 0.8) {
-      state.scrollBeat = state.playheadBeat - visibleBeats * 0.2;
+    if (state.playheadBeat > state.scrollBeat + visibleBeats * 0.85 ||
+        state.playheadBeat < state.scrollBeat - visibleBeats * 0.15) {
+      state.scrollBeat = state.playheadBeat - visibleBeats * 0.15;
     }
     render();
   }
@@ -734,6 +825,10 @@ document.getElementById('audio-offset').oninput = (e) => {
 };
 document.getElementById('hitline-pct').oninput = (e) => {
   state.hitLinePct = Math.max(0.1, Math.min(0.9, (parseInt(e.target.value) || 85) / 100));
+  render();
+};
+document.getElementById('bar-beats').oninput = (e) => {
+  state.barBeats = Math.max(1, Math.min(32, parseInt(e.target.value) || 4));
   render();
 };
 
@@ -779,6 +874,7 @@ let isPanning = false;
 canvas.addEventListener('mousedown', onMouseDown);
 canvas.addEventListener('mousemove', onMouseMove);
 canvas.addEventListener('mouseup', onMouseUp);
+canvas.addEventListener('mouseleave', () => { state.mousePos = null; render(); });
 canvas.addEventListener('contextmenu', onRightClick);
 canvas.addEventListener('wheel', onWheel, { passive: false });
 
@@ -831,6 +927,7 @@ function onMouseDown(e) {
 
 function onMouseMove(e) {
   const pos = canvasPos(e);
+  state.mousePos = pos;
   if (isPanning && state.dragPan) {
     const dy = pos.y - state.dragPan.startY;
     state.scrollBeat = state.dragPan.startScrollBeat + dy / beatsPerPx();
@@ -839,8 +936,8 @@ function onMouseMove(e) {
   if (state.tool === 'hold' && state.holdDragStart) {
     const beat = snapBeat(yToBeat(pos.y));
     state.holdDragCurrent = { beat };
-    render();
   }
+  render();
 }
 
 function onMouseUp(e) {
@@ -866,6 +963,22 @@ function onMouseUp(e) {
 function onRightClick(e) {
   e.preventDefault();
   const pos = canvasPos(e);
+  if (e.ctrlKey || e.metaKey) {
+    // Ctrl+RClick: set playhead (POS) to the beat at cursor (unsnapped)
+    const beat = yToBeat(pos.y);
+    state.playheadBeat = beat;
+    // Scroll so the new POS appears at the hit line
+    state.scrollBeat = beat;
+    if (state.playing) {
+      stopAudio();
+      state.playing = false;
+      document.getElementById('btn-play').textContent = '▶ Play';
+    }
+    setStatus('POS → beat ' + beat.toFixed(3) + ' (' + (beat / (state.bpm / 60)).toFixed(3) + 's)');
+    render();
+    return;
+  }
+  // Plain right-click: erase note under cursor
   const hit = hitTestNote(pos);
   if (hit) {
     pushUndo();
