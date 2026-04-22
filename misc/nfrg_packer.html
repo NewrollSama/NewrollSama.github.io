@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NFRG Resource Packer</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --accent: #7c6af7;
+    --accent2: #a78bfa;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --border: #2e3347;
+    --danger: #f87171;
+    --success: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; padding: 24px 16px; }
+  h1 { font-size: 1.5rem; font-weight: 700; color: var(--accent2); letter-spacing: 0.05em; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 28px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); margin-bottom: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
+  input[type=text], input[type=number] {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 8px 10px; font-size: 13px; width: 100%;
+    transition: border-color 0.2s;
+  }
+  input[type=text]:focus, input[type=number]:focus { outline: none; border-color: var(--accent); }
+  .file-input-wrap { position: relative; }
+  .file-btn {
+    display: flex; align-items: center; gap: 8px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    cursor: pointer; transition: border-color 0.2s; width: 100%;
+  }
+  .file-btn:hover { border-color: var(--accent); }
+  .file-btn .icon { color: var(--accent); font-size: 16px; flex-shrink: 0; }
+  .file-btn .fname { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-btn .fname.loaded { color: var(--success); }
+  input[type=file] { display: none; }
+  .beatmap-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; position: relative; }
+  .beatmap-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .beatmap-title { font-size: 0.8rem; font-weight: 600; color: var(--accent2); }
+  .remove-btn { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 18px; padding: 0 4px; line-height: 1; }
+  .remove-btn:hover { color: #fca5a5; }
+  .add-btn {
+    width: 100%; padding: 10px; background: transparent; border: 1px dashed var(--border);
+    border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 13px;
+    transition: all 0.2s; margin-top: 4px;
+  }
+  .add-btn:hover { border-color: var(--accent); color: var(--accent2); }
+  .pack-btn {
+    width: 100%; padding: 14px; background: var(--accent); border: none; border-radius: 8px;
+    color: #fff; font-size: 1rem; font-weight: 700; cursor: pointer; letter-spacing: 0.05em;
+    transition: background 0.2s; margin-top: 8px;
+  }
+  .pack-btn:hover { background: var(--accent2); }
+  .pack-btn:disabled { background: var(--muted); cursor: not-allowed; }
+  .error { color: var(--danger); font-size: 0.8rem; margin-top: 8px; padding: 8px 12px; background: #2a1a1a; border-radius: 6px; border: 1px solid #5a2020; }
+  .success-msg { color: var(--success); font-size: 0.85rem; margin-top: 8px; padding: 8px 12px; background: #0d2a1a; border-radius: 6px; border: 1px solid #1a5a30; }
+  .section-divider { border: none; border-top: 1px solid var(--border); margin: 8px 0 16px; }
+  @media (max-width: 500px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>⬡ NFRG Packer</h1>
+<p class="subtitle">Pack music, images, and beatmaps into a single .nfrg resource file.</p>
+
+<!-- Pack Info -->
+<div class="card">
+  <h2>Pack Info</h2>
+  <div class="grid3">
+    <div class="field">
+      <label>BPM (16-bit)</label>
+      <input type="number" id="bpm" min="1" max="65535" value="120">
+    </div>
+    <div class="field">
+      <label>BGM Title</label>
+      <input type="text" id="bgmTitle" placeholder="Song Title">
+    </div>
+    <div class="field">
+      <label>BGM Artist</label>
+      <input type="text" id="bgmArtist" placeholder="Artist Name">
+    </div>
+  </div>
+  <div style="height:12px"></div>
+  <div class="grid2">
+    <div class="field">
+      <label>Preview Start (ms, 32-bit)</label>
+      <input type="number" id="previewMs" min="0" value="0">
+    </div>
+  </div>
+</div>
+
+<!-- BGM File -->
+<div class="card">
+  <h2>BGM Audio</h2>
+  <div class="file-input-wrap">
+    <div class="file-btn" onclick="document.getElementById('bgmFile').click()">
+      <span class="icon">♪</span>
+      <span class="fname" id="bgmFileName">Click to select audio file…</span>
+    </div>
+    <input type="file" id="bgmFile" accept="audio/*">
+  </div>
+</div>
+
+<!-- Background Image -->
+<div class="card">
+  <h2>Background Image</h2>
+  <div class="file-input-wrap">
+    <div class="file-btn" onclick="document.getElementById('bgImage').click()">
+      <span class="icon">🖼</span>
+      <span class="fname" id="bgImageName">Click to select image file…</span>
+    </div>
+    <input type="file" id="bgImage" accept="image/*">
+  </div>
+</div>
+
+<!-- Beatmaps -->
+<div class="card">
+  <h2>Beatmaps</h2>
+  <div id="beatmapList"></div>
+  <button class="add-btn" onclick="addBeatmap()">+ Add Beatmap</button>
+</div>
+
+<button class="pack-btn" onclick="pack()">⬡ Pack Resources</button>
+<div id="msg"></div>
+
+<script>
+let beatmaps = [];
+let bmCounter = 0;
+
+function addBeatmap() {
+  const id = bmCounter++;
+  beatmaps.push({ id, file: null });
+  renderBeatmaps();
+}
+
+function removeBeatmap(id) {
+  beatmaps = beatmaps.filter(b => b.id !== id);
+  renderBeatmaps();
+}
+
+function renderBeatmaps() {
+  const list = document.getElementById('beatmapList');
+  if (beatmaps.length === 0) {
+    list.innerHTML = '<p style="color:var(--muted);font-size:0.82rem;margin-bottom:12px;">No beatmaps added yet.</p>';
+    return;
+  }
+  list.innerHTML = beatmaps.map((bm, i) => `
+    <div class="beatmap-item">
+      <div class="beatmap-header">
+        <span class="beatmap-title">Beatmap #${i + 1}</span>
+        <button class="remove-btn" onclick="removeBeatmap(${bm.id})">✕</button>
+      </div>
+      <div class="grid3" style="margin-bottom:12px">
+        <div class="field">
+          <label>Tracks (8-bit)</label>
+          <input type="number" id="bm_tracks_${bm.id}" min="1" max="255" value="4">
+        </div>
+        <div class="field">
+          <label>Caption</label>
+          <input type="text" id="bm_caption_${bm.id}" placeholder="e.g. Hard">
+        </div>
+        <div class="field">
+          <label>Delay (ms, 32-bit)</label>
+          <input type="number" id="bm_delay_${bm.id}" min="0" value="0">
+        </div>
+      </div>
+      <div class="file-input-wrap">
+        <div class="file-btn" onclick="document.getElementById('bm_file_${bm.id}').click()">
+          <span class="icon">📄</span>
+          <span class="fname" id="bm_fname_${bm.id}">${bm.file ? bm.file.name : 'Click to select beatmap file…'}</span>
+        </div>
+        <input type="file" id="bm_file_${bm.id}" onchange="bmFileChanged(${bm.id}, this)">
+      </div>
+    </div>
+  `).join('');
+}
+
+function bmFileChanged(id, input) {
+  const bm = beatmaps.find(b => b.id === id);
+  if (bm && input.files[0]) {
+    bm.file = input.files[0];
+    const el = document.getElementById(`bm_fname_${id}`);
+    el.textContent = input.files[0].name;
+    el.classList.add('loaded');
+  }
+}
+
+document.getElementById('bgmFile').addEventListener('change', function() {
+  const el = document.getElementById('bgmFileName');
+  if (this.files[0]) { el.textContent = this.files[0].name; el.classList.add('loaded'); }
+});
+document.getElementById('bgImage').addEventListener('change', function() {
+  const el = document.getElementById('bgImageName');
+  if (this.files[0]) { el.textContent = this.files[0].name; el.classList.add('loaded'); }
+});
+
+function readFile(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => res(new Uint8Array(e.target.result));
+    r.onerror = () => rej(new Error('Failed to read file: ' + file.name));
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function encodeStr(s) {
+  // null-terminated UTF-8
+  const enc = new TextEncoder().encode(s);
+  const out = new Uint8Array(enc.length + 1);
+  out.set(enc);
+  out[enc.length] = 0;
+  return out;
+}
+
+function writeU8(view, off, v)  { view.setUint8(off, v); return off + 1; }
+function writeU16(view, off, v) { view.setUint16(off, v, false); return off + 2; }
+function writeU32(view, off, v) { view.setUint32(off, v, false); return off + 4; }
+
+async function pack() {
+  const msgEl = document.getElementById('msg');
+  msgEl.innerHTML = '';
+
+  // Gather inputs
+  const bpm      = parseInt(document.getElementById('bpm').value) || 0;
+  const preview  = parseInt(document.getElementById('previewMs').value) || 0;
+  const titleStr = document.getElementById('bgmTitle').value;
+  const artistStr= document.getElementById('bgmArtist').value;
+  const bgmFileEl= document.getElementById('bgmFile');
+  const bgImgEl  = document.getElementById('bgImage');
+
+  if (!bgmFileEl.files[0]) { msgEl.innerHTML = '<div class="error">Please select a BGM audio file.</div>'; return; }
+  if (!bgImgEl.files[0])   { msgEl.innerHTML = '<div class="error">Please select a background image file.</div>'; return; }
+  if (beatmaps.length === 0) { msgEl.innerHTML = '<div class="error">Add at least one beatmap.</div>'; return; }
+
+  for (let i = 0; i < beatmaps.length; i++) {
+    if (!beatmaps[i].file) { msgEl.innerHTML = `<div class="error">Beatmap #${i+1} is missing its file.</div>`; return; }
+  }
+
+  try {
+    // Read all files
+    const bgmData   = await readFile(bgmFileEl.files[0]);
+    const bgImgData = await readFile(bgImgEl.files[0]);
+    const bmDatas   = await Promise.all(beatmaps.map(b => readFile(b.file)));
+
+    // Encode strings
+    const titleBytes  = encodeStr(titleStr);
+    const artistBytes = encodeStr(artistStr);
+    const bmCaptions  = beatmaps.map((bm, i) =>
+      encodeStr(document.getElementById(`bm_caption_${bm.id}`).value)
+    );
+
+    const numBeatmaps = beatmaps.length;
+
+    // Header sizes:
+    // Pack header: 4 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 4 + 4 = 36 bytes
+    // Each beatmap header: 1 + 4 + 4 + 4 + 4 = 17 bytes
+    const PACK_HDR_SIZE = 36;
+    const BM_HDR_SIZE   = 17;
+    const headersEnd    = PACK_HDR_SIZE + BM_HDR_SIZE * numBeatmaps;
+
+    // Lay out resource section in order:
+    // bgmData, bgImgData, titleBytes, artistBytes, [bmCaption0, bmData0, bmCaption1, bmData1, ...]
+    let cursor = headersEnd;
+
+    const bgmOffset   = cursor; cursor += bgmData.length;
+    const bgImgOffset = cursor; cursor += bgImgData.length;
+    const titleOffset = cursor; cursor += titleBytes.length;
+    const artistOffset= cursor; cursor += artistBytes.length;
+
+    const bmCaptionOffsets = [];
+    const bmFileOffsets    = [];
+    for (let i = 0; i < numBeatmaps; i++) {
+      bmCaptionOffsets.push(cursor); cursor += bmCaptions[i].length;
+      bmFileOffsets.push(cursor);    cursor += bmDatas[i].length;
+    }
+
+    const totalSize = cursor;
+    const buf  = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    const u8   = new Uint8Array(buf);
+
+    // Write pack header
+    let off = 0;
+    // Magic
+    u8[0] = 0x4E; u8[1] = 0x46; u8[2] = 0x52; u8[3] = 0x47; off = 4;
+    off = writeU16(view, off, bpm);
+    off = writeU16(view, off, numBeatmaps);
+    off = writeU32(view, off, bgmOffset);
+    off = writeU32(view, off, bgmData.length);
+    off = writeU32(view, off, titleOffset);
+    off = writeU32(view, off, artistOffset);
+    off = writeU32(view, off, preview);
+    off = writeU32(view, off, bgImgOffset);
+    off = writeU32(view, off, bgImgData.length);
+    // off should now == 36
+
+    // Write beatmap headers
+    for (let i = 0; i < numBeatmaps; i++) {
+      const bm    = beatmaps[i];
+      const tracks= parseInt(document.getElementById(`bm_tracks_${bm.id}`).value) || 1;
+      const delay = parseInt(document.getElementById(`bm_delay_${bm.id}`).value)  || 0;
+      off = writeU8 (view, off, tracks);
+      off = writeU32(view, off, bmCaptionOffsets[i]);
+      off = writeU32(view, off, bmFileOffsets[i]);
+      off = writeU32(view, off, bmDatas[i].length);
+      off = writeU32(view, off, delay);
+    }
+
+    // Write resources
+    u8.set(bgmData,    bgmOffset);
+    u8.set(bgImgData,  bgImgOffset);
+    u8.set(titleBytes, titleOffset);
+    u8.set(artistBytes,artistOffset);
+    for (let i = 0; i < numBeatmaps; i++) {
+      u8.set(bmCaptions[i], bmCaptionOffsets[i]);
+      u8.set(bmDatas[i],    bmFileOffsets[i]);
+    }
+
+    // Download
+    const blob = new Blob([buf], { type: 'application/octet-stream' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = (titleStr || 'pack') + '.nfrg';
+    a.click();
+    URL.revokeObjectURL(url);
+
+    msgEl.innerHTML = `<div class="success-msg">✓ Packed successfully! (${totalSize.toLocaleString()} bytes)</div>`;
+  } catch (e) {
+    msgEl.innerHTML = `<div class="error">Error: ${e.message}</div>`;
+  }
+}
+
+// Init
+renderBeatmaps();
+</script>
+</body>
+</html>
